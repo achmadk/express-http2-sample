@@ -66,7 +66,8 @@ app.use(responseTime())
 
 app.get('*', (req, res) => {
     client.get('weather', (err, result) => {
-         if (result && compareDate(result)) {
+        // if (result && compareDate(result)) {
+		if (result) {
             res.json(JSON.parse(result))
         } else { 
 			getDataAsync(res)
