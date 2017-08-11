@@ -12,10 +12,10 @@
   "license": "ISC",
   "dependencies": {
     "axios": "0.16.2",
-    "express": "4.15.3",
+    "express": "4.15.4",
     "graphql": "0.10.5",
     "moment": "2.18.1",
-    "redis": "2.7.1",
+    "redis": "2.8.0",
     "response-time": "2.3.2",
     "spdy": "3.4.7",
     "xml2js": "0.4.17"
