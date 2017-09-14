@@ -13,15 +13,15 @@
   "dependencies": {
     "axios": "0.16.2",
     "express": "4.15.4",
-    "graphql": "0.10.5",
+    "graphql": "0.11.3",
     "moment": "2.18.1",
     "redis": "2.8.0",
     "response-time": "2.3.2",
     "spdy": "3.4.7",
-    "xml2js": "0.4.17"
+    "xml2js": "0.4.19"
   },
   "devDependencies": {
-    "express-graphql": "0.6.7",
+    "express-graphql": "0.6.11",
     "express-xml-bodyparser": "0.3.0",
     "eyes": "0.1.8"
   }
