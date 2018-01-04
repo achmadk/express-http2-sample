@@ -1,113 +1,112 @@
-const port = 3000,
-    spdy = require('spdy'),
-    express = require('express'),
-    path = require('path'),
-    fs = require('fs'),
-    responseTime = require('response-time'),
-    redis = require('redis'),
-    axios = require('axios'),
-    xml2js = require('xml2js'),
-    moment = require('moment'),
-    parser = new xml2js.Parser({
-        explicitArray: false,
-        normalize: false,
-        normalizeTags: true,
-        trim: true
-    }),
-    inspector = require('eyes').inspector({ maxLength: false }),
-    client = redis.createClient(),
-    // schema = require('./schema'),
-    options = {
-        key: fs.readFileSync(__dirname + '/server.key'),
-        cert: fs.readFileSync(__dirname + '/server.crt')
-    }
-    // moment.locale('id')
+import { createServer } from 'spdy'
+import express from 'express'
+import { readFileSync } from 'fs'
+import responseTime from 'response-time'
+import { createClient, RedisClient, Multi } from 'redis'
+import { get } from 'axios'
+import moment from 'moment'
+import { promisifyAll } from 'bluebird'
+import { inspector } from 'eyes'
 
-function getWeatherData() {
-    return axios.get('http://data.bmkg.go.id/propinsi_00_1.xml')
+import { parseStringAsync } from './utils/parse-string-async'
+
+const port = 3000
+
+const inspect = inspector({ maxLength: false })
+
+const client = createClient()
+
+const options = {
+  key: readFileSync(`${__dirname}/server.key`),
+  cert: readFileSync(`${__dirname}/server.crt`)
 }
 
-function modifyData(response) {
-    const tglAttr = ['mulai', 'sampai']
-    var tanggal = response.cuaca.tanggal
+promisifyAll(RedisClient.prototype)
+promisifyAll(Multi.prototype)
 
-    for (var obj in tanggal) {
-        tanggal[obj] = moment(tanggal[obj] + ' ' + tanggal[obj + 'pukul'], 'DD MMMM YYYY hh.mm').format('dddd, D MMMM YYYY hh:mm').toString()
-        delete tanggal[obj + 'pukul']
-    }
-
-    const intAttrs = ['kelembapanmin', 'kelembapanmax', 'suhumax', 'suhumin', 'idkota', 'kecepatanangin'],
-        replaceIntAttrs = ['kelembapan_min', 'kelembapan_max', 'suhu_max', 'suhu_min', 'id_kota', 'kecepatan_angin'],
-        floatAttrs = ['lintang', 'bujur'],
-        deletedAttrs = ['point', '_symbol', 'propinsi', 'arahangin']
-    response.cuaca.peringatan = (response.cuaca.isi.peringatan == '-') ? null : response.cuaca.isi.peringatan
-    response.cuaca.isi = response.cuaca.isi.row.map(function(row) {
-        for (var obj in row) {
-            if (intAttrs.indexOf(obj) !== -1) {
-                // inspector(obj)
-                row[replaceIntAttrs[intAttrs.indexOf(obj)]] = parseInt(row[obj])
-                delete row[obj]
-            } else if (floatAttrs.indexOf(obj) !== -1) {
-                row[obj] = parseFloat(row[obj])
-            } else if (deletedAttrs.indexOf(obj) !== -1) {
-                if (obj == 'arahangin') row.arah_angin = (row.arahangin == "-") ? null : row.arahangin
-                delete row[obj]
-            } else if (row.cuaca == '-') row.cuaca = null
-        }
-        row.balai = row.balai.replace('_', ' ')
-        return row
-    })
-    return response
+async function getWeatherData() {
+  return await get('http://data.bmkg.go.id/propinsi_00_1.xml')
 }
 
-app = express()
+function modifyResult (cuaca) {
+  const intAttrs = ['kelembapanmin', 'kelembapanmax', 'suhumax', 'suhumin', 'kecepatanangin'],
+  replaceIntAttrs = ['kelembapan_min', 'kelembapan_max', 'suhu_max', 'suhu_min', 'kecepatan_angin'],
+  floatAttrs = ['lintang', 'bujur'],
+  deletedAttrs = ['point', '_symbol', 'propinsi', 'arahangin']
+
+  let tanggal = {}
+  for(let obj in cuaca.tanggal) {
+    if (!obj.includes('pukul')) {
+      let value = moment(`${cuaca.tanggal[obj]} ${cuaca.tanggal[`${obj}pukul`]}`, 'DD MMMM YYYY hh.mm')
+        .format('dddd, D MMMM YYYY hh:mm')
+        .toString()
+      tanggal = { ...tanggal, [obj]: value }
+    }
+  }
+  let isi = cuaca.isi.row.map(entry => {
+    let newEntry = {}
+    for (let obj in entry) {
+      if (intAttrs.includes(obj)) {
+        // inspector(obj)
+        newEntry = { ...newEntry, [replaceIntAttrs[intAttrs.indexOf(obj)]]: parseInt(entry[obj]) || entry[obj] }
+      } else if (floatAttrs.includes(obj)) {
+        newEntry = { ...newEntry, [obj]: parseFloat(entry[obj]) || entry[obj] }
+      } else if (obj === 'arahangin') {
+        newEntry = { ...newEntry, arah_angin: (entry.arahangin === '-') ? null : entry.arahangin }
+      } else if (obj === 'idkota') {
+        newEntry = { ...newEntry, id_kota: entry.idkota.toString() }
+      } else if (entry.cuaca === '-') newEntry = { ...newEntry, cuaca: null }
+    }
+    return { ...newEntry, balai: entry.balai.replace('_', ' ') }
+  })
+  return { data: { tanggal, isi } }
+}
+
+const app = express()
 
 app.use(responseTime())
 
-app.get('*', (req, res) => {
-    client.get('weather', (err, result) => {
-        // if (result && compareDate(result)) {
-		if (result) {
-            res.json(JSON.parse(result))
-        } else { 
-			getDataAsync(res)
-        }
-    })
+app.get('*', async (req, res) => {
+  try {
+    let result = await client.getAsync('weather')
+    if (result && compareDate(result)) {
+    // if (result) {
+      res.json(JSON.parse(result))
+    } else {
+      getDataAsync(res)
+    }
+  } catch (error) {
+    res.status(500).json(error)
+  }
 })
 
 function compareDate(result) {
-	var result = JSON.parse(result),
-	savedDate = moment(result.data.tanggal.mulai, 'dddd, D MMMM YYYY hh:mm').format('dddd, D MMMM YYYY'),
+	let parsedResult = JSON.parse(result),
+	savedDate = moment(parsedResult.data.tanggal.mulai, 'dddd, D MMMM YYYY hh:mm').format('dddd, D MMMM YYYY'),
 	currentDate = moment().format('dddd, D MMMM YYYY')
 	return savedDate == currentDate
 }
 
-function getDataAsync(res) {
-	getWeatherData()
-	.then(response => {
-        var data = { data: {} }
-        parser.parseString(response.data, (err, result) => {
-			console.log(err)
-            // inspector(result)
-            modifyData(result)
-            data.data = result.cuaca
-                        // inspector(data.data.isi.length)
-        })
-        client.set('weather', JSON.stringify(data), (err, value) => console.log(value))
-        res.json(data)
-    }).catch(err => {
-        console.log(err)
-        if (err.status === 404) res.send('website http://data.bmkg.go.id/propinsi_00_1.xml was not found')
-		else res.send(err)
-    })
+async function getDataAsync(res) {
+  try {
+    let weatherResult = await getWeatherData()
+    let { cuaca } = await parseStringAsync(weatherResult.data)
+    let finalResult = modifyResult(cuaca)
+    let savedResult = client.setAsync('weather', JSON.stringify(finalResult))
+    res.json(finalResult)
+  } catch (error) {
+    console.log(error)
+    if (err.status === 404) res.send('website http://data.bmkg.go.id/propinsi_00_1.xml was not found')
+    else res.send(error)
+  }
 }
 
-spdy.createServer(options, app)
-    .listen(port, (error) => {
-        if (error) {
-            console.error(error)
-            return process.exit(1)
-        } else {
-            console.log('Listening on port: ' + port + '.')
-        }
-    })
+createServer(options, app)
+  .listen(port, (error) => {
+    if (error) {
+      console.error(error)
+      return process.exit(1)
+    } else {
+      console.log(`Listening on port: ${port}.`)
+    }
+  })
